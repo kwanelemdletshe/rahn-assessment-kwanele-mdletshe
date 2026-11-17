@@ -1,6 +1,7 @@
 import os
 import datetime
 import json
+import time  # Added to manage retry delays under server spikes
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -38,9 +39,14 @@ def analyze_query_with_llm(client: genai.Client, query_string: str) -> EnquiryAn
         "Map mentioned packages to keys ('single_session', '5_sessions', '12_sessions') and slots to HH:MM format."
     )
 
-    # Use standard stable production model gemini-3.6-flash for high availability
+    # FIX: Fall back to standard stable production model if variable is missing or blank
+    env_model = os.getenv("GEMINI_MODEL")
+    configured_model = (
+        env_model.strip() if env_model and env_model.strip() else "gemini-2.5-flash"
+    )
+
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model=configured_model,
         contents=prompt_guidelines,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -101,35 +107,75 @@ def main():
         print("Error: Query text cannot be completely empty.")
         return
 
-    try:
-        client = initialize_gemini_client()
-        print("\nProcessing intent analysis via Gemini API structures...")
-        analysis = analyze_query_with_llm(client, customer_query)
+    # Configuration for automatic self-healing resilience loop
+    max_retries = 3
+    retry_delay = 2  # seconds
+    analysis = None
 
-        response_draft = compile_grounded_response(
-            intent=analysis.intent,
-            package_type=analysis.extracted_package_type,
-            time_slot=analysis.extracted_time_slot,
-        )
+    # Step 1: Run the LLM analysis with built-in infrastructure timeout/congested retries
+    for attempt in range(max_retries):
+        try:
+            client = initialize_gemini_client()
 
-        print("\n--- Compiled Response Draft ---")
-        print(f'"{response_draft}"')
-        print("--------------------------------")
+            # Print execution attempt path tracking metrics
+            attempt_suffix = (
+                f" (Attempt {attempt + 1}/{max_retries})" if attempt > 0 else ""
+            )
+            print(
+                f"\nProcessing intent analysis via Gemini API structures...{attempt_suffix}"
+            )
 
-        staff_choice = input("Send draft? (y/n): ").strip().lower()
+            analysis = analyze_query_with_llm(client, customer_query)
+            break  # Break out cleanly if the network request succeeds
 
-        # FIX: Only call write_to_status_log if staff enters 'y'
-        if staff_choice == "y":
-            write_to_status_log(customer_query, analysis, response_draft, "sent")
-            print("Operational clearance received. Transaction logged as 'sent'.")
-        else:
-            # Rejections are intercepted in memory and NOT recorded to the file
-            print("Draft intercepted and rejected by operator. Transaction discarded.")
+        except Exception as error:
+            error_str = str(error)
+            # Intercept known server congestion codes (503 High Demand / 504 Timeout) to retry safely
+            if (
+                "503" in error_str
+                or "504" in error_str
+                or "deadline_exceeded" in error_str.lower()
+            ):
+                if attempt < max_retries - 1:
+                    print(
+                        f"Temporary server congestion encountered. Retrying in {retry_delay} seconds..."
+                    )
+                    time.sleep(retry_delay)
+                    continue
 
-    except Exception as error:
-        # FIX: System failures, timeouts, and Pydantic validation errors are printed but never logged to file
-        print(f"\nSystem Error Encountered: {error}")
-        print("Action aborted due to system/parsing error. Transaction discarded.")
+            # Raise the exception to the final fallback block if it's permanent or out of retries
+            print(f"\nSystem Error Encountered: {error}")
+            print("Action aborted due to system/parsing error. Transaction discarded.")
+            return
+
+    # Step 2: Ground the validated response parameters and handle human validation gate
+    if analysis is not None:
+        try:
+            response_draft = compile_grounded_response(
+                intent=analysis.intent,
+                package_type=analysis.extracted_package_type,
+                time_slot=analysis.extracted_time_slot,
+            )
+
+            print("\n--- Compiled Response Draft ---")
+            print(f'"{response_draft}"')
+            print("--------------------------------")
+
+            staff_choice = input("Send draft? (y/n): ").strip().lower()
+
+            # Only call write_to_status_log if staff enters 'y'
+            if staff_choice == "y":
+                write_to_status_log(customer_query, analysis, response_draft, "sent")
+                print("Operational clearance received. Transaction logged as 'sent'.")
+            else:
+                # Rejections are intercepted in memory and NOT recorded to the file
+                print(
+                    "Draft intercepted and rejected by operator. Transaction discarded."
+                )
+
+        except Exception as error:
+            print(f"\nSystem Error Encountered during grounding execution: {error}")
+            print("Action aborted due to system/parsing error. Transaction discarded.")
 
 
 if __name__ == "__main__":
