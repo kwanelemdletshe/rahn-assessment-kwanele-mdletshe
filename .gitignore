@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL support
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables (Crucial for rule 6)
+.env
+
+# Testing and local caches
+.pytest_cache/
+.venv/
+
+
+# Local operational log dumps
+status_log.json
