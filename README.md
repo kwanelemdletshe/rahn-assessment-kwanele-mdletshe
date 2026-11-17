@@ -16,10 +16,8 @@ rahn-assessment-kwanele-mdletshe/
 │
 ├── docs/
 │   ├── SRS.md                      # Mini Software Requirements Specification
-│   ├── PROJECT_PLAN.md             # Project Execution Plan & Milestones
 │   ├── ARCHITECTURE.md             # Software Architecture Design Document
 │   ├── BACKLOG.md                  # Copilot-Friendly Task Breakdown Backlog
-│   ├── WORKFLOW_GUIDE.md           # Folder & Naming Standards Guide
 │   └── REGRESSION_TESTS.md         # Full Manual & Automated Test Matrix
 │
 ├── src/
